@@ -1,9 +1,12 @@
 from pycocotools.coco import COCO
-from pycocotools.cocoeval import COCOeval
 from PIL import Image
 from tqdm import tqdm
 import numpy as np
 import os
+import torch
+import torchvision
+from torchmetrics.detection.mean_ap import MeanAveragePrecision
+from torchmetrics.classification import Precision, Recall
 
 # Custom modules
 import utils.wrapper as wrapper
@@ -16,9 +19,9 @@ YOLO_TO_COCO = {
     3: 4, # Motorcycle
 }   
 
-class ModelEvaluator:
-    def __init__(self, model_wrapper: wrapper.ModelWrapper):
-        self.model_wrapper = model_wrapper
+class Evaluator:
+    def __init__(self, model: wrapper.Wrapper):
+        self.model = model
     
     def evaluate(self, annotation_path: str):
         """
@@ -27,48 +30,27 @@ class ModelEvaluator:
         """
         # Load dataset from path
         coco_dataset = self.load_dataset(annotation_path)
-        results = {
-            'model_name': os.path.basename(self.model_wrapper.model_path),
-            'dataset_name': os.path.basename(os.path.dirname(annotation_path)),
-        }
 
-        for conf_threshold in tqdm(np.arange(0.50, 1.05, 0.05), desc="Processing confidence thresholds"):
-            # Load predictions
-            predictions = self.load_predictions(annotation_path, coco_dataset, conf_threshold)
+        # Get model predictions for each image from the dataset
+        model_predictions = self.load_predictions(annotation_path, coco_dataset)
 
-            # Define metrics
-            map = 0
-            map50 = 0
-            map75 = 0
-            precision = 0
-            recall = 0
+        # Load annotations in torchmetrics format
+        annotations = self.process_annotations(coco_dataset)
+        results = []
 
-            # Load predictions results
-            if len(predictions):
-                coco_predictions = coco_dataset.loadRes(predictions)
-                
-                # Evaluate predictions
-                coco_eval = COCOeval(coco_dataset, coco_predictions, iouType="bbox")
-                coco_eval.evaluate()
-                coco_eval.accumulate()
-                coco_eval.summarize()
+        # Initialize metrics
+        map_metric = MeanAveragePrecision()
 
-                # Update metrics
-                map = coco_eval.stats[0]
-                map50 = coco_eval.stats[1]
-                map75 = coco_eval.stats[2]
-                precision = coco_eval.stats[5]
-                recall = coco_eval.stats[6]
+        for conf_threshold in tqdm(np.arange(0.50, 1.00, 0.05), desc="Processing confidence thresholds"):
+            # Load predictions in torchmetrics format
+            predictions = self.process_predictions(model_predictions, conf_threshold)
 
-            # Append results
-            results.append({
-                "confidence_threshold": conf_threshold,
-                "mAP": map,
-                "mAP50": map50,
-                "mAP75": map75,
-                "precision": precision,
-                "recall": recall,
-            })
+            # Update the map_metric for the current threshold
+            map_metric.reset()
+            map_metric.update(predictions, annotations)
+            map_results = map_metric.compute()
+
+            print(f"Confidence Threshold: {conf_threshold:.2f}, mAP: {map_results['map'].item()}")
 
         return results
         
@@ -109,61 +91,114 @@ class ModelEvaluator:
 
         return coco_dataset
     
-    def load_predictions(self, annotation_path: str, coco_dataset: COCO, conf_threshold: float):
+    def load_predictions(self, annotation_path: str, coco_dataset: COCO):
         """
             Loads model predictions for each image in the dataset
-            returns the dataset with the model predictions
+            returns all predictions in tensormetrics format
         """
 
         # Load all images in folder
         predictions = []
-        for image_id in tqdm(coco_dataset.getImgIds(), desc="Processing images"):
+        for image_id in tqdm(coco_dataset.getImgIds(), desc="Processing images predictions"):
             try:
                 image_info = coco_dataset.loadImgs(image_id)[0]
                 image_path = os.path.join(os.path.dirname(annotation_path), image_info["file_name"])
                 image = Image.open(image_path).convert("RGB")
                 
                 # Get image predictions
-                image_predictions = self.model_wrapper.predict(
-                    image=image,
-                    conf_threshold=conf_threshold
-                )
+                image_predictions = self.model.predict(image)
+                predictions.append(image_predictions)
 
-                # Format prediction in COCO format
-                image_predictions = list(map(
-                    lambda pred: self.process_prediction(pred, image_id), 
-                    image_predictions
-                ))
-                image_predictions = list(filter(
-                    lambda x: x is not None, 
-                    image_predictions
-                ))
-                
-                # Append new predictions
-                if len(image_predictions):
-                    predictions.extend(image_predictions)
             except Exception as e:
                 print(f"Image {image_id} Error: {e}")
 
         return predictions
+    
+    def process_annotations(self, coco_dataset: COCO):
+        """
+            Converts COCO annotations to torchmetrics format
+        """
+        targets = []
 
-    def process_prediction(self, prediction: dict, image_id: str):
+        for image_id in tqdm(coco_dataset.getImgIds(), desc="Processing images annotations"):
+            ann_ids = coco_dataset.getAnnIds(imgIds=image_id)
+            anns = coco_dataset.loadAnns(ann_ids)
+
+            # Extract boxes and labels for this image
+            boxes = []
+            labels = []
+            for ann in anns:
+                # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
+                x_min, y_min, width, height = ann['bbox']
+
+                # Calculate x_max and y_max
+                x_max = x_min + width
+                y_max = y_min + height
+
+                # Append values
+                boxes.append([x_min, y_min, x_max, y_max])
+                labels.append(ann['category_id'])
+
+            # Append target for this image
+            targets.append({
+                'boxes': torch.tensor(boxes, dtype=torch.float32),
+                'labels': torch.tensor(labels, dtype=torch.int64)
+            })
+    
+        return targets
+
+    def process_predictions(self, predictions: list, conf_threshold: float, nms_iou_threshold: float = 0.4):
         """
-            Standardizes model predictions to COCO format, mapping classes from model classes
-            to coco formatted classes, and converting bounding boxes to COCO format.
+            Converts model predictions to torchmetrics format
         """
-        coco_class = None
-        
-        # Map model class to coco class
-        if self.model_wrapper.model_type == wrapper.MODEL_YOLO:
-            coco_class = YOLO_TO_COCO.get(prediction['class'], None)
-        
-        if coco_class is not None:
-            return {
-                "image_id": image_id,
-                "category_id": coco_class,
-                "bbox": prediction['bbox'],
-                "score": prediction['score']
-            }
-        else:
-            return None
+        processed_predictions = []
+
+        for image_predictions in tqdm(predictions, desc=f"Processing predictions for threshold {conf_threshold}"):
+            # Map all classes to coco classes
+            if self.model.model_type == wrapper.MODEL_YOLO:
+                image_predictions = [{**x, 'class': YOLO_TO_COCO.get(x['class'])} for x in image_predictions]
+            
+            # Filter out unsupported classes
+            image_predictions = [x for x in image_predictions if x['class'] in SUPPORTED_COCO_CLASSES]
+            
+            # Process predictions
+            boxes_final = torch.tensor([])
+            scores_final = torch.tensor([])
+            labels_final = torch.tensor([])
+
+            if len(image_predictions):
+                # Convert predictions to tensor
+                image_predictions = [[*x['bbox'], x['score'], x['class']] for x in image_predictions]
+                image_predictions = torch.tensor(image_predictions)
+
+                # Set values
+                boxes = image_predictions[:, :4]
+                scores = image_predictions[:, 4]
+                labels = image_predictions[:, 5]
+
+                # Filter by confidence threshold
+                conf_mask = scores >= conf_threshold
+                boxes_filtered = boxes[conf_mask]
+                scores_filtered = scores[conf_mask]
+                labels_filtered = labels[conf_mask]
+
+                # Apply NMS
+                nms_mask = torchvision.ops.nms(
+                    boxes_filtered,
+                    scores_filtered,
+                    nms_iou_threshold
+                )
+
+                # Filte final predictions
+                boxes_final = boxes_filtered[nms_mask]
+                scores_final = scores_filtered[nms_mask]
+                labels_final = labels_filtered[nms_mask]
+
+            processed_predictions.append({
+                'boxes': boxes_final.to(torch.float32),
+                'scores': scores_final.to(torch.float32),
+                'labels': labels_final.to(torch.int64),
+            })
+
+
+        return processed_predictions

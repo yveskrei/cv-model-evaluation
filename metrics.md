@@ -5,4 +5,4 @@
 <img src="images/pr_roc_curves.png" width="600" height="300" alt="PR/ROC Curves">
 - **Screw up images** - shows images with bad IOU's between ground truth and predictions from the model. Helps evaluating errors.
 <br>
-<img src="images/iou_images.jpg" width="600" height="300" alt="PR/ROC Curves">
+<img src="images/iou_images.jpg" width="600" height="300" alt="IOU">

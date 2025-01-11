@@ -57,12 +57,6 @@ pytest_cache/
 htmlcov/
 .tox/
 
-# Jupyter Notebook outputs (optional, if you want to exclude figures or intermediate outputs)
-*.png
-*.jpg
-*.svg
-*.pdf
-
 # Ignore folders
 datasets/
 sources/
