@@ -1,8 +1,7 @@
-torch
-torchvision
-numpy
-pycocotools
-pandas
-seaborn
 onnx
 onnxruntime-gpu
+torch
+torchvision
+torchmetrics
+numpy
+pandas

@@ -12,7 +12,7 @@ MODEL_YOLO = 'YOLO'
 PROVIDER_CPU = 'CPUExecutionProvider'
 PROVIDER_CUDA = 'CUDAExecutionProvider'
 
-class ModelWrapper:
+class Wrapper:
     def __init__(self, model_path: str, model_type: str=None):
         if not os.path.exists(model_path):
             raise Exception(f"Model is not found at {model_path}")
@@ -74,12 +74,12 @@ class ModelWrapper:
 
         return image_array
 
-    def predict(self, image: Image, conf_threshold: float=0.5, nms_iou_threshold: float=0.4):
+    def predict(self, image: Image):
         """
-            Returns predictions for a single image, as a list, in COCO format
-            bbboxes are converted to original dimensions with format [x_min, y_min, width, height]
+            Returns predictions for a single image, as a list.
+            bbboxes are converted to original dimensions with format [x_min, y_min, x_max, y_max]
         """
-        bboxes = []
+        results = []
 
         # Preprocess image based on model type
         image_array = self.process_input(image)
@@ -107,42 +107,21 @@ class ModelWrapper:
                 # Get max confidence score and class id for each prediction
                 max_scores, class_ids = torch.max(scores, dim=1)
                 
-                # Filter by confidence threshold
-                conf_mask = max_scores >= conf_threshold
-                boxes_filtered = boxes_xyxy[conf_mask]
-                scores_filtered = max_scores[conf_mask]
-                class_ids_filtered = class_ids[conf_mask]
-                
-                # Apply NMS
-                nms_indices = torchvision.ops.nms(
-                    boxes_filtered,
-                    scores_filtered,
-                    nms_iou_threshold
-                )
-                
                 # Get final predictions
-                boxes_final = boxes_filtered[nms_indices]
-                scores_final = scores_filtered[nms_indices]
-                class_ids_final = class_ids_filtered[nms_indices]
-
-                for bbox, score, class_id in zip(boxes_final, scores_final, class_ids_final):
+                for bbox, score, class_id in zip(boxes_xyxy, max_scores, class_ids):
                     x_min, y_min, x_max, y_max = bbox.tolist()
-
-                    # Calculate width and height
-                    width = x_max - x_min
-                    height = y_max - y_min
 
                     # Convert bbox to original dimensions
                     image_width, image_height = image.size
                     x_min = (x_min / 640) * image_width
                     y_min = (y_min / 640) * image_height
-                    width = (width / 640) * image_width
-                    height = (height / 640) * image_height
+                    x_max = (x_max / 640) * image_width
+                    y_max = (y_max / 640) * image_height
 
-                    bboxes.append({
-                        "bbox": [x_min, y_min, width, height],
-                        "score": score.item(),
-                        "class": class_id.item()
+                    results.append({
+                        'bbox': [x_min, y_min, x_max, y_max],
+                        'score': score.item(),
+                        'class': int(class_id.item())
                     })
 
-        return bboxes
+        return results
