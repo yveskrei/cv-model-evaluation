@@ -6,7 +6,6 @@ import os
 import torch
 import torchvision
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
-from torchmetrics.classification import Precision, Recall
 
 # Custom modules
 import utils.wrapper as wrapper
@@ -41,7 +40,10 @@ class Evaluator:
         # Initialize metrics
         map_metric = MeanAveragePrecision()
 
-        for conf_threshold in tqdm(np.arange(0.50, 1.00, 0.05), desc="Processing confidence thresholds"):
+        for conf_threshold in tqdm(np.arange(0.05, 1.00, 0.01), desc="Processing confidence thresholds"):
+            # Format confidence threshold
+            conf_threshold = round(conf_threshold, 2)
+
             # Load predictions in torchmetrics format
             predictions = self.process_predictions(model_predictions, conf_threshold)
 
@@ -50,7 +52,32 @@ class Evaluator:
             map_metric.update(predictions, annotations)
             map_results = map_metric.compute()
 
-            print(f"Confidence Threshold: {conf_threshold:.2f}, mAP: {map_results['map'].item()}")
+            # Compute confusion matrix for IOU threshold of 0.5
+            tp, fp, fn = self.get_confusion_matrix(predictions, annotations, 0.5, conf_threshold)
+
+            # Compute precision, recall, and F1-score
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+            f1_score = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+            
+            # Compute amount of bboxes in annotations and predictions
+            total_annotations = sum([len(x['labels']) for x in annotations])
+            total_predictions = sum([len(x['labels']) for x in predictions])
+
+            results.append({
+                'conf_threshold': conf_threshold,
+                'map': map_results['map'].item(),
+                'map50': map_results['map_50'].item(),
+                'map75': map_results['map_75'].item(),
+                'precision': precision,
+                'recall': recall,
+                'f1_score': f1_score,
+                'annotations': total_annotations,
+                'predictions': total_predictions,
+                'tp': tp,
+                'fp': fp,
+                'fn': fn
+            })
 
         return results
         
@@ -120,7 +147,7 @@ class Evaluator:
         """
         targets = []
 
-        for image_id in tqdm(coco_dataset.getImgIds(), desc="Processing images annotations"):
+        for image_id in coco_dataset.getImgIds():
             ann_ids = coco_dataset.getAnnIds(imgIds=image_id)
             anns = coco_dataset.loadAnns(ann_ids)
 
@@ -202,3 +229,62 @@ class Evaluator:
 
 
         return processed_predictions
+
+    def get_confusion_matrix(self, predictions: list, annotations: list, iou_thresh: float, conf_thresh: float):
+        tp, fp, fn = 0, 0, 0
+
+        for pred, annot in zip(predictions, annotations):
+            pred_boxes = pred["boxes"]
+            pred_scores = pred["scores"]
+            pred_labels = pred["labels"]
+            annot_boxes = annot["boxes"]
+            annot_labels = annot["labels"]
+
+            matched = torch.zeros(len(annot_boxes), dtype=torch.bool)  # Track matched targets
+
+            for box, score, label in zip(pred_boxes, pred_scores, pred_labels):
+                if score < conf_thresh:
+                    continue  # Skip low-confidence predictions
+
+                ious = self.calculate_iou(box, annot_boxes)
+                max_iou, max_idx = ious.max(0)
+
+                if max_iou.item() >= iou_thresh and label == annot_labels[max_idx].item() and not matched[max_idx].item():
+                    tp += 1
+                    matched[max_idx] = True
+                else:
+                    fp += 1
+
+            fn += len(annot_boxes) - matched.sum().item()
+
+        return tp, fp, fn
+
+    # IoU calculation function
+    @staticmethod
+    def calculate_iou(bbox: torch.Tensor, target_bboxes: torch.Tensor):
+        """
+            Calculate the Intersection over Union (IoU) between a single bounding box and target bounding boxes.
+        """
+        # Ensure the input bbox is of the correct shape
+        bbox = bbox.view(-1, 4)
+        
+        # Compute the intersection coordinates
+        x1_inter = torch.max(bbox[:, 0], target_bboxes[:, 0])
+        y1_inter = torch.max(bbox[:, 1], target_bboxes[:, 1])
+        x2_inter = torch.min(bbox[:, 2], target_bboxes[:, 2])
+        y2_inter = torch.min(bbox[:, 3], target_bboxes[:, 3])
+        
+        # Compute intersection area
+        intersection = torch.clamp(x2_inter - x1_inter, min=0) * torch.clamp(y2_inter - y1_inter, min=0)
+        
+        # Compute areas of each box
+        bbox_area = (bbox[:, 2] - bbox[:, 0]) * (bbox[:, 3] - bbox[:, 1])
+        target_areas = (target_bboxes[:, 2] - target_bboxes[:, 0]) * (target_bboxes[:, 3] - target_bboxes[:, 1])
+        
+        # Compute union area
+        union = bbox_area + target_areas - intersection
+        
+        # Compute IoU
+        iou = intersection / torch.clamp(union, min=1e-6)
+        
+        return iou

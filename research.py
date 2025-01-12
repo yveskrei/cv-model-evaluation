@@ -15,6 +15,6 @@ results = evaluator.evaluate(
     annotation_path='datasets/val2017/annotation.json'
 )
 
-# # Save results to JSON
-# with open('results.json', 'w') as file:
-#     json.dump(results, file, indent=4)
+# Save results to JSON
+with open('results.json', 'w') as file:
+    json.dump(results, file, indent=4)
