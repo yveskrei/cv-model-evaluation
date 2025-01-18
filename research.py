@@ -1,18 +1,19 @@
-from utils.wrapper import Wrapper, MODEL_YOLO
-from utils.evaluator import Evaluator 
 import json
 
-# Evaluate ONNX model
-evaluator = Evaluator(
-    model = Wrapper(
-        model_path='models/yolo11m.onnx',
-        model_type=MODEL_YOLO
-    )
+# Custom modules
+from utils.wrapper import Wrapper
+import utils.config as config
+
+model = Wrapper(
+    model_path='./models/yolo11m.onnx',
+    model_task=config.TASK_DETECTION,
+    model_type=config.MODEL_YOLO
 )
 
 # Evaluate model
-results = evaluator.evaluate(
-    annotation_path='datasets/val2017/annotation.json'
+results = model.evaluator.evaluate(
+    dataset_annotation='./datasets/val2017/annotation.json',
+    dataset_name='val2017',
 )
 
 # Save results to JSON
