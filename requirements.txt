@@ -5,4 +5,7 @@ torchvision
 torchmetrics
 numpy
 pandas
-plotly
+tqdm
+pillow
+pycocotools
+timm

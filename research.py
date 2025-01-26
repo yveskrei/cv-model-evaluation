@@ -5,7 +5,7 @@ from utils.wrapper import Wrapper
 import utils.config as config
 
 model = Wrapper(
-    model_path='./models/yolo11m.onnx',
+    model_path='./models/yolov9-m.onnx',
     model_task=config.TASK_DETECTION,
     model_type=config.MODEL_YOLO
 )

@@ -1,4 +1,5 @@
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
+import torchvision.transforms as transforms
 from pycocotools.coco import COCO
 from PIL import Image
 from tqdm import tqdm
@@ -21,8 +22,8 @@ class Detection:
     
     def evaluate(self, dataset_annotation: str, dataset_name: str):
         """
-            Evaluates the model on a given dataset, returning results for each confidence
-            threshold between 0 and 1
+            Evaluates the model on a given dataset, for each confidence threshold(0.01 steps)
+            returns a dictionary with the results
         """
         # Load dataset from path
         coco_dataset = self.load_dataset(dataset_annotation)
@@ -67,14 +68,14 @@ class Detection:
 
             results.append({
                 'conf_threshold': conf_threshold,
+                'annotations': total_annotations,
+                'predictions': total_predictions,
                 'map': map_results['map'].item(),
                 'map50': map_results['map_50'].item(),
                 'map75': map_results['map_75'].item(),
                 'precision': precision,
                 'recall': recall,
                 'f1_score': f1_score,
-                'annotations': total_annotations,
-                'predictions': total_predictions,
                 'tp': tp,
                 'fp': fp,
                 'fn': fn
@@ -83,6 +84,7 @@ class Detection:
         return {
             'dataset': dataset_name,
             'model': os.path.basename(self.model.model_path),
+            'task': self.model.model_task,
             'results': results
         }
         
@@ -123,35 +125,7 @@ class Detection:
 
         return coco_dataset
     
-    def load_predictions(self, coco_dataset: COCO, dataset_folder: str):
-        """
-            Loads model predictions for each image in the dataset
-            returns all predictions in tensormetrics format
-        """
-
-        # Load all images in folder
-        predictions = []
-        for image_id in tqdm(coco_dataset.getImgIds(), desc="Processing images predictions"):
-            try:
-                image_info = coco_dataset.loadImgs(image_id)[0]
-                image_path = os.path.join(dataset_folder, image_info['file_name'])
-                image = Image.open(image_path).convert('RGB')
-            
-                # Process model output   
-                image_predictions = self.get_predictions(image)
-
-                # Append predictions
-                if len(image_predictions):
-                    predictions.append(image_predictions)
-                else:
-                    logger.warning(f"Image {image_id} - No predictions")
-
-            except Exception as e:
-                logger.error(f"Image {image_id} - {e}")
-
-        return predictions
-    
-    def get_predictions(self, image: Image):
+    def get_model_predictions(self, image: Image):
         """
             Returns predictions for a single image, as a list.
             bboxes are converted to original dimensions with format [x_min, y_min, x_max, y_max]
@@ -160,19 +134,12 @@ class Detection:
 
         if self.model.model_type in (config.MODEL_YOLO, config.MODEL_DEFAULT):
             # Preprocess image
-            image_input = image.resize((640, 640))
-            image_array = np.array(image_input).astype(np.float32)
-            image_array = image_array / 255.0
-
-            # Ensure the image has 3 channels - If grayscale, convert to 3 channels
-            if image_array.ndim == 2:
-                image_array = np.stack([image_array] * 3, axis=-1)
-
-            # Transpose to match the expected input shape - from (H, W, C) to (C, H, W)
-            image_array = np.transpose(image_array, (2, 0, 1))
-
-            # Add a batch dimension (B, C, H, W) - from (C, H, W) to (1, C, H, W)
-            image_array = np.expand_dims(image_array, axis=0)
+            # Resize to model's input size + Convert to tensor (C, H, W) & scale to [0,1]
+            transform = transforms.Compose([
+                transforms.Resize((640, 640)),
+                transforms.ToTensor()
+            ])
+            image_array = transform(image)
 
             # Get model output
             model_output = self.model.predict(image_array)
@@ -217,9 +184,38 @@ class Detection:
         
         return results
 
+    def load_predictions(self, coco_dataset: COCO, dataset_folder: str):
+        """
+            Loads model predictions for each image in the dataset
+            returns all predictions in raw format(before processing NMS, confidence thresholding, etc)
+        """
+
+        # Load all images in folder
+        predictions = []
+        for image_id in tqdm(coco_dataset.getImgIds(), desc="Processing images predictions"):
+            try:
+                image_info = coco_dataset.loadImgs(image_id)[0]
+                image_path = os.path.join(dataset_folder, image_info['file_name'])
+                image = Image.open(image_path).convert('RGB')
+            
+                # Process model output   
+                image_predictions = self.get_model_predictions(image)
+
+                # Append predictions
+                if len(image_predictions):
+                    predictions.append(image_predictions)
+                else:
+                    logger.warning(f"Image {image_id} - No predictions")
+
+            except Exception as e:
+                logger.error(f"Image {image_id} - {e}")
+
+        return predictions
+
     def process_predictions(self, predictions: list, conf_threshold: float):
         """
-            Converts model predictions to torchmetrics format
+            Converts raw model predictions to torchmetrics format
+            Filters predictions(removes unsupported classes) and applies NMS and confidence thresholding
         """
         processed_predictions = []
 
@@ -302,6 +298,9 @@ class Detection:
         return targets
 
     def get_confusion_matrix(self, predictions: list, annotations: list, iou_thresh: float, conf_thresh: float):
+        """
+            Computes the confusion matrix for a given set of predictions and annotations.
+        """
         tp, fp, fn = 0, 0, 0
 
         for pred, annot in zip(predictions, annotations):
@@ -331,7 +330,6 @@ class Detection:
 
         return tp, fp, fn
 
-    # IoU calculation function
     @staticmethod
     def calculate_iou(bbox: torch.Tensor, target_bboxes: torch.Tensor):
         """
