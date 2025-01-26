@@ -57,6 +57,6 @@ def filter_coco_annotations(input_file, output_file, classes_to_keep):
 # Example usage
 input_coco_file = 'instances_val2017.json'
 output_coco_file = 'annotation.json'
-classes_to_keep = [1, 3, 4]  # Replace with your desired class names or IDs
+classes_to_keep = [1, 3, 4]
 
 filter_coco_annotations(input_coco_file, output_coco_file, classes_to_keep)

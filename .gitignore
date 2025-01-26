@@ -57,7 +57,8 @@ pytest_cache/
 htmlcov/
 .tox/
 
-# Ignore folders
+# Project-specific
 datasets/
 sources/
 models/
+testing.py
