@@ -10,15 +10,19 @@ import logging
 import os
 
 # Custom modules
+from utils.evaluator import Evaluator
 import utils.config as config
 
 # Variables
 logger = logging.getLogger(__name__)
 IOU_THRESHOLD = 0.5
 
-class Detection:
+class ObjectDetection(Evaluator):
     def __init__(self, model):
         self.model = model
+        
+        if self.model.model_type not in (config.MODEL_YOLO, config.MODEL_DETR):
+            raise Exception(f"Model type {self.model.model_type} is not supported for object detection")
     
     def evaluate(self, dataset_annotation: str, dataset_name: str):
         """
@@ -39,8 +43,8 @@ class Detection:
         results = []
 
         # Initialize metrics
-        map_metric = MeanAveragePrecision()
-        map_metric.warn_on_many_detections = False
+        metric_map = MeanAveragePrecision()
+        metric_map.warn_on_many_detections = False
 
         for conf_threshold in tqdm(np.arange(0.01, 1.01, 0.01), desc="Processing confidence thresholds"):
             # Format confidence threshold
@@ -49,13 +53,13 @@ class Detection:
             # Load predictions in torchmetrics format
             filtered_predictions = self.process_predictions(model_predictions, conf_threshold)
 
-            # Update the map_metric for the current threshold
-            map_metric.reset()
-            map_metric.update(filtered_predictions, annotations)
-            map_results = map_metric.compute()
+            # Update the metric_map for the current threshold
+            metric_map.reset()
+            metric_map.update(filtered_predictions, annotations)
+            map_results = metric_map.compute()
 
             # Compute confusion matrix for IOU threshold of 0.5
-            tp, fp, fn = self.get_confusion_matrix(filtered_predictions, annotations, IOU_THRESHOLD, conf_threshold)
+            tp, fp, fn = self.get_confusion_matrix(filtered_predictions, annotations, IOU_THRESHOLD)
 
             # Compute precision, recall, and F1-score
             precision = tp / (tp + fp) if (tp + fp) > 0 else 0
@@ -81,65 +85,29 @@ class Detection:
                 'fn': fn
             })
 
+            logger.info(results[-1])
+
         return {
             'dataset': dataset_name,
             'model': os.path.basename(self.model.model_path),
             'task': self.model.model_task,
             'results': results
         }
-        
-    def load_dataset(self, dataset_annotation: str):
-        """
-            Dataset should be in the following format:
-            A folder, including images, with it an annotations.json file, in COCO format.
-            returns the base annotations together with the predictions of the model, in COCO format.
-        """
-
-        # Validate existance of annotations file
-        if not os.path.exists(dataset_annotation):
-            raise Exception(f"Annotation file not found at {dataset_annotation}")
-        
-        # Parse COCO Annotations
-        coco_dataset = COCO(dataset_annotation)
-        logger.info(f"Loaded dataset with {len(coco_dataset.getImgIds())} images, {len(coco_dataset.getAnnIds())} annotations")
-
-        # Filter dataset annotations to allowed classes
-        filtered_annotations = [
-            ann for ann in coco_dataset.dataset['annotations']
-            if ann['category_id'] in config.SUPPORTED_COCO_CLASSES
-        ]
-        filtered_categories = [
-            cat for cat in coco_dataset.dataset['categories']
-            if cat['id'] in config.SUPPORTED_COCO_CLASSES
-        ]
-
-        if len(filtered_annotations) == 0:
-            raise Exception("No annotations found for supported classes")
-        elif len(filtered_annotations) != len(coco_dataset.getAnnIds()):
-            logger.warning(f"Filtered dataset to {len(filtered_annotations)} annotations due to unsupported classes")
-
-            # Update dataset with filtered annotations
-            coco_dataset.dataset['annotations'] = filtered_annotations
-            coco_dataset.dataset['categories'] = filtered_categories
-            coco_dataset.createIndex()
-
-        return coco_dataset
     
     def get_model_predictions(self, image: Image):
         """
             Returns predictions for a single image, as a list.
-            bboxes are converted to original dimensions with format [x_min, y_min, x_max, y_max]
+            removes unsupported classes, bboxes are converted to original dimensions with format [x_min, y_min, x_max, y_max]
         """
         results = []
 
-        if self.model.model_type in (config.MODEL_YOLO, config.MODEL_DEFAULT):
-            # Preprocess image
+        if self.model.model_type == config.MODEL_YOLO:
             # Resize to model's input size + Convert to tensor (C, H, W) & scale to [0,1]
             transform = transforms.Compose([
                 transforms.Resize((640, 640)),
                 transforms.ToTensor()
             ])
-            image_array = transform(image)
+            image_array = transform(image).unsqueeze(0).numpy()
 
             # Get model output
             model_output = self.model.predict(image_array)
@@ -152,12 +120,21 @@ class Detection:
                 boxes = predictions[:, :4]
                 scores = predictions[:, 4:]
                 
-                # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
+                # Convert bboxes to original dimensions
                 boxes_xyxy = torch.zeros_like(boxes)
+                image_width, image_height = image.size
+                scale_x = image_width / 640
+                scale_y = image_height / 640
+
+                # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
                 boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2]/2  # x1
                 boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3]/2  # y1
                 boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2]/2  # x2
                 boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3]/2  # y2
+
+                # Convert bboxes to original size
+                boxes_xyxy[:, [0, 2]] *= scale_x
+                boxes_xyxy[:, [1, 3]] *= scale_y
                 
                 # Get max confidence score and class id for each prediction
                 max_scores, class_ids = torch.max(scores, dim=1)
@@ -169,60 +146,81 @@ class Detection:
                     # Yolo returns output in COCO classes
                     bbox_class = int(class_id.item()) + 1
 
-                    # Convert bbox to original dimensions
-                    image_width, image_height = image.size
-                    x_min = (x_min / 640) * image_width
-                    y_min = (y_min / 640) * image_height
-                    x_max = (x_max / 640) * image_width
-                    y_max = (y_max / 640) * image_height
+                    if bbox_class in config.SUPPORTED_COCO_CLASSES:
+                        results.append({
+                            'bbox': [x_min, y_min, x_max, y_max],
+                            'score': score.item(),
+                            'class': bbox_class
+                        })
 
-                    results.append({
-                        'bbox': [x_min, y_min, x_max, y_max],
-                        'score': score.item(),
-                        'class': bbox_class
-                    })
-        
+        elif self.model.model_type == config.MODEL_DETR:
+            # Resize to model's input size + Convert to tensor (C, H, W) & scale to [0,1]
+            transform = transforms.Compose([
+                transforms.Resize((800, 1066)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) 
+            ])
+            image_array = transform(image).unsqueeze(0).numpy()
+
+            # Get model output
+            model_output = self.model.predict(image_array)
+            output_scores = torch.from_numpy(model_output[0])
+            output_boxes = torch.from_numpy(model_output[1])
+
+            for batch in range(output_boxes.shape[0]):
+                # Get values
+                boxes = output_boxes[batch]
+                scores = output_scores[batch]
+
+                # Convert boxes to original dimensions
+                boxes_xyxy = torch.zeros_like(boxes)
+                resized_height, resized_width = image_array.shape[2], image_array.shape[3]
+                image_width, image_height = image.size
+                scale_x = image_width / resized_width
+                scale_y = image_height / resized_height
+
+                # Denormalize boxes
+                boxes_xyxy[:, 0] = boxes[:, 0] * resized_width
+                boxes_xyxy[:, 1] = boxes[:, 1] * resized_height
+                boxes_xyxy[:, 2] = boxes[:, 2] * resized_width
+                boxes_xyxy[:, 3] = boxes[:, 3] * resized_height
+
+                # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
+                boxes_xyxy[:, 0] = boxes_xyxy[:, 0] - boxes_xyxy[:, 2]/2  # x1
+                boxes_xyxy[:, 1] = boxes_xyxy[:, 1] - boxes_xyxy[:, 3]/2  # y1
+                boxes_xyxy[:, 2] = boxes_xyxy[:, 0] + boxes_xyxy[:, 2]/2  # x2
+                boxes_xyxy[:, 3] = boxes_xyxy[:, 1] + boxes_xyxy[:, 3]/2  # y2
+
+                # Convert bboxes to original size
+                boxes_xyxy[:, [0, 2]] *= scale_x
+                boxes_xyxy[:, [1, 3]] *= scale_y
+                
+                # Get max confidence score and class id for each prediction
+                max_scores, class_ids = torch.max(scores, dim=1)
+
+                # Get final predictions
+                for bbox, score, class_id in zip(boxes_xyxy, max_scores, class_ids):
+                    x_min, y_min, x_max, y_max = bbox.tolist()
+
+                    # Yolo returns output in COCO classes
+                    bbox_class = int(class_id.item()) + 1
+
+                    if bbox_class in config.SUPPORTED_COCO_CLASSES:
+                        results.append({
+                            'bbox': [x_min, y_min, x_max, y_max],
+                            'score': score.item(),
+                            'class': bbox_class
+                        })
         return results
-
-    def load_predictions(self, coco_dataset: COCO, dataset_folder: str):
-        """
-            Loads model predictions for each image in the dataset
-            returns all predictions in raw format(before processing NMS, confidence thresholding, etc)
-        """
-
-        # Load all images in folder
-        predictions = []
-        for image_id in tqdm(coco_dataset.getImgIds(), desc="Processing images predictions"):
-            try:
-                image_info = coco_dataset.loadImgs(image_id)[0]
-                image_path = os.path.join(dataset_folder, image_info['file_name'])
-                image = Image.open(image_path).convert('RGB')
-            
-                # Process model output   
-                image_predictions = self.get_model_predictions(image)
-
-                # Append predictions
-                if len(image_predictions):
-                    predictions.append(image_predictions)
-                else:
-                    logger.warning(f"Image {image_id} - No predictions")
-
-            except Exception as e:
-                logger.error(f"Image {image_id} - {e}")
-
-        return predictions
 
     def process_predictions(self, predictions: list, conf_threshold: float):
         """
             Converts raw model predictions to torchmetrics format
-            Filters predictions(removes unsupported classes) and applies NMS and confidence thresholding
+            Filters predictions and applies NMS and confidence thresholding
         """
         processed_predictions = []
 
-        for image_predictions in tqdm(predictions, desc=f"Processing predictions for threshold {conf_threshold}"):     
-            # Filter out unsupported classes
-            image_predictions = list(filter(lambda x: x['class'] in config.SUPPORTED_COCO_CLASSES, image_predictions))
-            
+        for image_predictions in tqdm(predictions, desc=f"Processing predictions for threshold {conf_threshold}"):
             # Process predictions
             boxes_final = torch.tensor([])
             scores_final = torch.tensor([])
@@ -240,21 +238,22 @@ class Detection:
 
                 # Filter by confidence threshold
                 conf_mask = scores >= conf_threshold
-                boxes_filtered = boxes[conf_mask]
-                scores_filtered = scores[conf_mask]
-                labels_filtered = labels[conf_mask]
+                boxes_final = boxes[conf_mask]
+                scores_final = scores[conf_mask]
+                labels_final = labels[conf_mask]
 
-                # Apply NMS
-                nms_mask = torchvision.ops.nms(
-                    boxes_filtered,
-                    scores_filtered,
-                    IOU_THRESHOLD
-                )
+                # Apply NMS for YOLO models
+                if self.model.model_type == config.MODEL_YOLO:
+                    nms_mask = torchvision.ops.nms(
+                        boxes_final,
+                        scores_final,
+                        IOU_THRESHOLD
+                    )
 
-                # Filte final predictions
-                boxes_final = boxes_filtered[nms_mask]
-                scores_final = scores_filtered[nms_mask]
-                labels_final = labels_filtered[nms_mask]
+                    # Filter final predictions
+                    boxes_final = boxes_final[nms_mask]
+                    scores_final = scores_final[nms_mask]
+                    labels_final = labels_final[nms_mask]
 
             processed_predictions.append({
                 'boxes': boxes_final.to(torch.float32),
@@ -268,7 +267,7 @@ class Detection:
         """
             Converts COCO annotations to torchmetrics format
         """
-        targets = []
+        annotations = []
 
         for image_id in coco_dataset.getImgIds():
             ann_ids = coco_dataset.getAnnIds(imgIds=image_id)
@@ -290,14 +289,14 @@ class Detection:
                 labels.append(ann['category_id'])
 
             # Append target for this image
-            targets.append({
+            annotations.append({
                 'boxes': torch.tensor(boxes, dtype=torch.float32),
                 'labels': torch.tensor(labels, dtype=torch.int64)
             })
     
-        return targets
+        return annotations
 
-    def get_confusion_matrix(self, predictions: list, annotations: list, iou_thresh: float, conf_thresh: float):
+    def get_confusion_matrix(self, predictions: list, annotations: list, iou_thresh: float):
         """
             Computes the confusion matrix for a given set of predictions and annotations.
         """
@@ -305,19 +304,17 @@ class Detection:
 
         for pred, annot in zip(predictions, annotations):
             pred_boxes = pred["boxes"]
-            pred_scores = pred["scores"]
             pred_labels = pred["labels"]
             annot_boxes = annot["boxes"]
             annot_labels = annot["labels"]
 
+            # Count amount of matches to annotations
             matched = torch.zeros(len(annot_boxes), dtype=torch.bool)
 
-            for box, score, label in zip(pred_boxes, pred_scores, pred_labels):
-                # Skip low-confidence predictions
-                if score < conf_thresh:
-                    continue
-
-                ious = self.calculate_iou(box, annot_boxes)
+            # Compute IOUs for each prediction
+            pred_ious = torchvision.ops.box_iou(pred_boxes, annot_boxes)
+            
+            for ious, label in zip(pred_ious, pred_labels):
                 max_iou, max_idx = ious.max(dim=0)
 
                 if max_iou.item() >= iou_thresh and label == annot_labels[max_idx].item() and not matched[max_idx].item():
@@ -329,32 +326,3 @@ class Detection:
             fn += len(annot_boxes) - matched.sum().item()
 
         return tp, fp, fn
-
-    @staticmethod
-    def calculate_iou(bbox: torch.Tensor, target_bboxes: torch.Tensor):
-        """
-            Calculate the Intersection over Union (IoU) between a single bounding box and target bounding boxes.
-        """
-        # Ensure the input bbox is of the correct shape
-        bbox = bbox.view(-1, 4)
-        
-        # Compute the intersection coordinates
-        x1_inter = torch.max(bbox[:, 0], target_bboxes[:, 0])
-        y1_inter = torch.max(bbox[:, 1], target_bboxes[:, 1])
-        x2_inter = torch.min(bbox[:, 2], target_bboxes[:, 2])
-        y2_inter = torch.min(bbox[:, 3], target_bboxes[:, 3])
-        
-        # Compute intersection area
-        intersection = torch.clamp(x2_inter - x1_inter, min=0) * torch.clamp(y2_inter - y1_inter, min=0)
-        
-        # Compute areas of each box
-        bbox_area = (bbox[:, 2] - bbox[:, 0]) * (bbox[:, 3] - bbox[:, 1])
-        target_areas = (target_bboxes[:, 2] - target_bboxes[:, 0]) * (target_bboxes[:, 3] - target_bboxes[:, 1])
-        
-        # Compute union area
-        union = bbox_area + target_areas - intersection
-        
-        # Compute IoU
-        iou = intersection / torch.clamp(union, min=1e-6)
-        
-        return iou

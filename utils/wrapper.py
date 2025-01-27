@@ -3,32 +3,35 @@ import logging
 import os
 
 # Custom modules
-from utils.detection import Detection
 import utils.config as config
+
+# Evaluators
+from utils.tasks.object_detection import ObjectDetection
+from utils.tasks.multi_label_classification import MultiLabelClassification
 
 # Variables
 logger = logging.getLogger(__name__)
 
 class Wrapper:
-    def __init__(self, model_path: str, model_task: str = None, model_type: str = config.MODEL_DEFAULT):
+    def __init__(self, model_path: str, model_task: str, model_type: str):
         if not os.path.exists(model_path):
             raise Exception(f"Model is not found at {model_path}")
-        if model_task is None:
-            raise Exception('Model task is required')
-        if model_type is None:
-            raise Exception('Model type is required')
         
         # Specify model parameters
         self.model_type = model_type
         self.model_path = model_path
         self.model_task = model_task
-        
-        # Create ONNX session for prediction
-        self.ort_session = self.get_ort_session()
 
         # Define model evaluator
         if model_task == config.TASK_DETECTION:
-            self.evaluator = Detection(self)
+            self.evaluator = ObjectDetection(self)
+        elif model_task == config.TASK_MULTI_LABEL_CLASSIFICATION:
+            self.evaluator = MultiLabelClassification(self)
+        else:
+            raise Exception(f"Model task {model_task} is not supported")
+        
+        # Create ONNX session for prediction
+        self.ort_session = self.get_ort_session()
 
     def get_ort_session(self):
         # Determine ONNX runtime providers
