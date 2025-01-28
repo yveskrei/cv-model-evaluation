@@ -52,7 +52,7 @@ class Evaluator:
     def load_predictions(self, coco_dataset: COCO, dataset_folder: str):
         """
             Loads model predictions for each image in the dataset
-            returns all predictions in raw format(before processing NMS, confidence thresholding, etc)
+            returns all predictions in raw format for each image(before confidence thresholding, etc)
         """
 
         # Load all images in folder
@@ -67,7 +67,7 @@ class Evaluator:
                 image_predictions = self.get_model_predictions(image)
 
                 # Append predictions
-                if len(image_predictions):
+                if image_predictions.shape[0] > 0:
                     predictions.append(image_predictions)
                 else:
                     logger.warning(f"Image {image_id} - No predictions")
@@ -77,3 +77,10 @@ class Evaluator:
                 logger.error(f"Image {image_id} - {e}")
 
         return predictions
+    
+    def get_model_predictions(self, image: Image):
+        """
+            Runs model prediction on a given image
+            returns model predictions in raw format
+        """
+        raise NotImplementedError("Method not implemented")
