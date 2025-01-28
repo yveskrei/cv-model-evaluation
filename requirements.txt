@@ -1,7 +1,5 @@
 onnx
 onnxruntime-gpu
-torch
-torchvision
 torchmetrics
 numpy
 pandas

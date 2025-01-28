@@ -12,6 +12,7 @@ import os
 # Custom modules
 from utils.evaluator import Evaluator
 import utils.config as config
+import utils.statistics.confidence_intervals as confidence_intervals
 
 # Variables
 logger = logging.getLogger(__name__)
@@ -24,10 +25,10 @@ class ObjectDetection(Evaluator):
         if self.model.model_type not in (config.MODEL_YOLO, config.MODEL_DETR):
             raise Exception(f"Model type {self.model.model_type} is not supported for object detection")
     
-    def evaluate(self, dataset_annotation: str, dataset_name: str):
+    def evaluate(self, dataset_annotation: str, dataset_name: str) -> dict:
         """
-            Evaluates the model on a given dataset, for each confidence threshold(0.01 steps)
-            returns a dictionary with the results
+            Evaluates the model on a given dataset
+            returns both per-confidence statistics and per-class statistics
         """
         # Load dataset from path
         coco_dataset = self.load_dataset(dataset_annotation)
@@ -38,9 +39,28 @@ class ObjectDetection(Evaluator):
             dataset_folder=os.path.dirname(dataset_annotation)
         )
 
-        # Load annotations in torchmetrics format
-        annotations = self.process_annotations(coco_dataset)
+        # Get Per-Confidence threshold statistics
+        per_confidence = self.get_per_confidence_statistics(
+            coco_dataset, 
+            model_predictions
+        )
+
+        return {
+            'dataset': dataset_name,
+            'model': os.path.basename(self.model.model_path),
+            'task': self.model.model_task,
+            'per_confidence': per_confidence
+        }
+    
+    def get_per_confidence_statistics(self, coco_dataset: COCO, model_predictions: list) -> list:
+        """
+            Itterates over differnet confidence intervals(steps of 0.01)
+            returns several object-deterction related metrics
+        """
         results = []
+
+        # Load annotations in torchmetrics format
+        annotations = self.get_torchmetrics_annotations(coco_dataset)
 
         # Initialize metrics
         metric_map = MeanAveragePrecision()
@@ -51,7 +71,7 @@ class ObjectDetection(Evaluator):
             conf_threshold = round(conf_threshold, 2)
 
             # Load predictions in torchmetrics format
-            filtered_predictions = self.process_predictions(model_predictions, conf_threshold)
+            filtered_predictions = self.get_torchmetrics_predictions(model_predictions, conf_threshold)
 
             # Update the metric_map for the current threshold
             metric_map.reset()
@@ -84,23 +104,18 @@ class ObjectDetection(Evaluator):
                 'fp': fp,
                 'fn': fn
             })
-
-            logger.info(results[-1])
-
-        return {
-            'dataset': dataset_name,
-            'model': os.path.basename(self.model.model_path),
-            'task': self.model.model_task,
-            'results': results
-        }
+        
+        return results
     
-    def get_model_predictions(self, image: Image):
+    def get_model_predictions(self, image: Image) -> torch.Tensor:
         """
-            Returns predictions for a single image, as a list.
-            removes unsupported classes, bboxes are converted to original dimensions with format [x_min, y_min, x_max, y_max]
-        """
-        results = []
+            Required by the Evaluator class
+            Parses raw output from the model for a single image
+            Returns a tensor contains model predictions(bboxes for the image)
 
+            each prediction is represented as [x_min, y_min, x_max, y_max, class_1_prob, class_2_prob, ...], 
+            where amount of classes is defined by the model
+        """
         if self.model.model_type == config.MODEL_YOLO:
             # Resize to model's input size + Convert to tensor (C, H, W) & scale to [0,1]
             transform = transforms.Compose([
@@ -113,45 +128,31 @@ class ObjectDetection(Evaluator):
             model_output = self.model.predict(image_array)
             output = torch.from_numpy(model_output[0]) 
 
-            for batch in output:
-                predictions = batch.T  # (8400, 84)
-        
-                # Split into boxes and class scores
-                boxes = predictions[:, :4]
-                scores = predictions[:, 4:]
-                
-                # Convert bboxes to original dimensions
-                boxes_xyxy = torch.zeros_like(boxes)
-                image_width, image_height = image.size
-                scale_x = image_width / 640
-                scale_y = image_height / 640
+            # Process predictions - Only one image
+            predictions = output[0].T  # (8400, 84)
+    
+            # Split into boxes and class scores
+            boxes = predictions[:, :4]
+            scores = predictions[:, 4:]
+            
+            # Convert bboxes to original dimensions
+            boxes_xyxy = torch.zeros_like(boxes)
+            image_width, image_height = image.size
+            scale_x = image_width / 640
+            scale_y = image_height / 640
 
-                # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
-                boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2]/2  # x1
-                boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3]/2  # y1
-                boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2]/2  # x2
-                boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3]/2  # y2
+            # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
+            boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2]/2  # x1
+            boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3]/2  # y1
+            boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2]/2  # x2
+            boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3]/2  # y2
 
-                # Convert bboxes to original size
-                boxes_xyxy[:, [0, 2]] *= scale_x
-                boxes_xyxy[:, [1, 3]] *= scale_y
-                
-                # Get max confidence score and class id for each prediction
-                max_scores, class_ids = torch.max(scores, dim=1)
-                
-                # Get final predictions
-                for bbox, score, class_id in zip(boxes_xyxy, max_scores, class_ids):
-                    x_min, y_min, x_max, y_max = bbox.tolist()
-
-                    # Yolo returns output in COCO classes
-                    bbox_class = int(class_id.item()) + 1
-
-                    if bbox_class in config.SUPPORTED_COCO_CLASSES:
-                        results.append({
-                            'bbox': [x_min, y_min, x_max, y_max],
-                            'score': score.item(),
-                            'class': bbox_class
-                        })
+            # Convert bboxes to original size
+            boxes_xyxy[:, [0, 2]] *= scale_x
+            boxes_xyxy[:, [1, 3]] *= scale_y
+            
+            # Get final predictions
+            return torch.cat((boxes_xyxy, scores), dim=1)
 
         elif self.model.model_type == config.MODEL_DETR:
             # Resize to model's input size + Convert to tensor (C, H, W) & scale to [0,1]
@@ -164,108 +165,45 @@ class ObjectDetection(Evaluator):
 
             # Get model output
             model_output = self.model.predict(image_array)
-            output_scores = torch.from_numpy(model_output[0])
-            output_boxes = torch.from_numpy(model_output[1])
+            output_scores = torch.from_numpy(model_output[0])[0]
+            output_boxes = torch.from_numpy(model_output[1])[0]
 
-            for batch in range(output_boxes.shape[0]):
-                # Get values
-                boxes = output_boxes[batch]
-                scores = output_scores[batch]
+            # Process predictions - Only one image
+            boxes = output_boxes[0] # (100, 92)
+            scores = output_scores[0] # (100, 4)
 
-                # Convert boxes to original dimensions
-                boxes_xyxy = torch.zeros_like(boxes)
-                resized_height, resized_width = image_array.shape[2], image_array.shape[3]
-                image_width, image_height = image.size
-                scale_x = image_width / resized_width
-                scale_y = image_height / resized_height
+            # Convert boxes to original dimensions
+            boxes_xyxy = torch.zeros_like(boxes)
+            resized_height, resized_width = image_array.shape[2], image_array.shape[3]
+            image_width, image_height = image.size
+            scale_x = image_width / resized_width
+            scale_y = image_height / resized_height
 
-                # Denormalize boxes
-                boxes_xyxy[:, 0] = boxes[:, 0] * resized_width
-                boxes_xyxy[:, 1] = boxes[:, 1] * resized_height
-                boxes_xyxy[:, 2] = boxes[:, 2] * resized_width
-                boxes_xyxy[:, 3] = boxes[:, 3] * resized_height
+            # Denormalize boxes
+            boxes_xyxy[:, 0] = boxes[:, 0] * resized_width
+            boxes_xyxy[:, 1] = boxes[:, 1] * resized_height
+            boxes_xyxy[:, 2] = boxes[:, 2] * resized_width
+            boxes_xyxy[:, 3] = boxes[:, 3] * resized_height
 
-                # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
-                boxes_xyxy[:, 0] = boxes_xyxy[:, 0] - boxes_xyxy[:, 2]/2  # x1
-                boxes_xyxy[:, 1] = boxes_xyxy[:, 1] - boxes_xyxy[:, 3]/2  # y1
-                boxes_xyxy[:, 2] = boxes_xyxy[:, 0] + boxes_xyxy[:, 2]/2  # x2
-                boxes_xyxy[:, 3] = boxes_xyxy[:, 1] + boxes_xyxy[:, 3]/2  # y2
+            # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
+            boxes_xyxy[:, 0] = boxes_xyxy[:, 0] - boxes_xyxy[:, 2]/2  # x1
+            boxes_xyxy[:, 1] = boxes_xyxy[:, 1] - boxes_xyxy[:, 3]/2  # y1
+            boxes_xyxy[:, 2] = boxes_xyxy[:, 0] + boxes_xyxy[:, 2]/2  # x2
+            boxes_xyxy[:, 3] = boxes_xyxy[:, 1] + boxes_xyxy[:, 3]/2  # y2
 
-                # Convert bboxes to original size
-                boxes_xyxy[:, [0, 2]] *= scale_x
-                boxes_xyxy[:, [1, 3]] *= scale_y
-                
-                # Get max confidence score and class id for each prediction
-                max_scores, class_ids = torch.max(scores, dim=1)
-
-                # Get final predictions
-                for bbox, score, class_id in zip(boxes_xyxy, max_scores, class_ids):
-                    x_min, y_min, x_max, y_max = bbox.tolist()
-
-                    # Yolo returns output in COCO classes
-                    bbox_class = int(class_id.item()) + 1
-
-                    if bbox_class in config.SUPPORTED_COCO_CLASSES:
-                        results.append({
-                            'bbox': [x_min, y_min, x_max, y_max],
-                            'score': score.item(),
-                            'class': bbox_class
-                        })
-        return results
-
-    def process_predictions(self, predictions: list, conf_threshold: float):
-        """
-            Converts raw model predictions to torchmetrics format
-            Filters predictions and applies NMS and confidence thresholding
-        """
-        processed_predictions = []
-
-        for image_predictions in tqdm(predictions, desc=f"Processing predictions for threshold {conf_threshold}"):
-            # Process predictions
-            boxes_final = torch.tensor([])
-            scores_final = torch.tensor([])
-            labels_final = torch.tensor([])
-
-            if len(image_predictions):
-                # Convert predictions to tensor
-                image_predictions = [[*x['bbox'], x['score'], x['class']] for x in image_predictions]
-                image_predictions = torch.tensor(image_predictions)
-
-                # Set values
-                boxes = image_predictions[:, :4]
-                scores = image_predictions[:, 4]
-                labels = image_predictions[:, 5]
-
-                # Filter by confidence threshold
-                conf_mask = scores >= conf_threshold
-                boxes_final = boxes[conf_mask]
-                scores_final = scores[conf_mask]
-                labels_final = labels[conf_mask]
-
-                # Apply NMS for YOLO models
-                if self.model.model_type == config.MODEL_YOLO:
-                    nms_mask = torchvision.ops.nms(
-                        boxes_final,
-                        scores_final,
-                        IOU_THRESHOLD
-                    )
-
-                    # Filter final predictions
-                    boxes_final = boxes_final[nms_mask]
-                    scores_final = scores_final[nms_mask]
-                    labels_final = labels_final[nms_mask]
-
-            processed_predictions.append({
-                'boxes': boxes_final.to(torch.float32),
-                'scores': scores_final.to(torch.float32),
-                'labels': labels_final.to(torch.int64),
-            })
-
-        return processed_predictions
-
-    def process_annotations(self, coco_dataset: COCO):
+            # Convert bboxes to original size
+            boxes_xyxy[:, [0, 2]] *= scale_x
+            boxes_xyxy[:, [1, 3]] *= scale_y
+            
+            # Get final predictions
+            return torch.cat((boxes_xyxy, scores), dim=1)
+        else:
+            return torch.tensor([])
+    
+    def get_torchmetrics_annotations(self, coco_dataset: COCO):
         """
             Converts COCO annotations to torchmetrics format
+            returns annotations in torchmetrics format(tensors of boxes, labels)
         """
         annotations = []
 
@@ -296,9 +234,73 @@ class ObjectDetection(Evaluator):
     
         return annotations
 
+    def get_torchmetrics_predictions(self, model_predictions: torch.Tensor, conf_threshold: float):
+        """
+            Converts raw model predictions to torchmetrics format
+            Filters predictions(by confidence, unsupported classes) and applies NMS(if required)
+
+            returns predictions in torchmetrics format(tensors of boxes, labels, scores)
+        """
+        processed_predictions = []
+
+        for image_predictions in tqdm(model_predictions, desc=f"Processing predictions for threshold {conf_threshold}"):
+            # Process predictions
+            boxes_final = torch.tensor([])
+            scores_final = torch.tensor([])
+            labels_final = torch.tensor([])
+
+            if len(image_predictions):
+                # Split to boxes & scores
+                boxes = image_predictions[:, :4]
+                scores = image_predictions[:, 4:]
+
+                # Get max confidence score and class id for each prediction
+                scores_max, scores_labels = torch.max(scores, dim=1)
+
+                # Map classes to COCO classes
+                if self.model.model_type in (config.MODEL_YOLO, config.MODEL_DETR):
+                    # Since YOLO+DETR models output COCO classes, we don't need to map any to COCO
+                    scores_labels += 1
+                
+                # Filter classes that are not supported
+                supported_mask = torch.isin(scores_labels, torch.tensor(config.SUPPORTED_COCO_CLASSES))
+                boxes_filtered = boxes[supported_mask]
+                scores_filtered = scores_max[supported_mask]
+                labels_filtered = scores_labels[supported_mask]
+                
+                # Filter by confidence threshold
+                conf_mask = scores_filtered >= conf_threshold
+                boxes_final = boxes_filtered[conf_mask]
+                scores_final = scores_filtered[conf_mask]
+                labels_final = labels_filtered[conf_mask]
+
+                # Apply NMS for YOLO models
+                if self.model.model_type == config.MODEL_YOLO:
+                    nms_mask = torchvision.ops.nms(
+                        boxes_final,
+                        scores_final,
+                        IOU_THRESHOLD
+                    )
+
+                    # Filter final predictions
+                    boxes_final = boxes_final[nms_mask]
+                    scores_final = scores_final[nms_mask]
+                    labels_final = labels_final[nms_mask]
+
+            processed_predictions.append({
+                'boxes': boxes_final.to(torch.float32),
+                'scores': scores_final.to(torch.float32),
+                'labels': labels_final.to(torch.int64),
+            })
+
+        return processed_predictions
+
     def get_confusion_matrix(self, predictions: list, annotations: list, iou_thresh: float):
         """
             Computes the confusion matrix for a given set of predictions and annotations.
+            both predictions and annotations are in torchmetrics format
+
+            returns the amount of true positives, false positives, and false negatives
         """
         tp, fp, fn = 0, 0, 0
 

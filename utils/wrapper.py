@@ -7,7 +7,6 @@ import utils.config as config
 
 # Evaluators
 from utils.tasks.object_detection import ObjectDetection
-from utils.tasks.multi_label_classification import MultiLabelClassification
 
 # Variables
 logger = logging.getLogger(__name__)
@@ -25,8 +24,6 @@ class Wrapper:
         # Define model evaluator
         if model_task == config.TASK_DETECTION:
             self.evaluator = ObjectDetection(self)
-        elif model_task == config.TASK_MULTI_LABEL_CLASSIFICATION:
-            self.evaluator = MultiLabelClassification(self)
         else:
             raise Exception(f"Model task {model_task} is not supported")
         
