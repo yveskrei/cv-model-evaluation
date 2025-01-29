@@ -3,16 +3,20 @@ import torch
 
 # Custom modules
 from utils.statistics.bootstrap import Bootstrap
-from utils.statistics.metrics import mAP, precision_macro, precision_micro, recall_macro, recall_micro, f1_macro, f1_micro
+from utils.statistics.metrics import auc, mAP, precision_binary,recall_binary, f1_binary,precision_multiclass_macro, precision_multiclass_micro, recall_multiclass_macro,recall_multiclass_micro, f1_multiclass_macro, f1_multiclass_micro
 
 # Variables
+METRIC_AUC = 'auc'
 METRIC_MAP = 'mAP'
-METRIC_PRECISION_MACRO = 'precision_macro'
-METRIC_PRECISION_MICRO = 'precision_micro'
-METRIC_RECALL_MACRO = 'recall_macro'
-METRIC_RECALL_MICRO = 'recall_micro'
-METRIC_F1_MACRO = 'f1_macro'
-METRIC_F1_MICRO = 'f1_micro'
+METRIC_PRECISION_BINARY = 'precision_binary'
+METRIC_RECALL_BINARY = 'recall_binary'
+METRIC_F1_BINARY = 'f1_binary'
+METRIC_PRECISION_MULTICLASS_MACRO = 'precision_macro'
+METRIC_PRECISION_MULTICLASS_MICRO = 'precision_micro'
+METRIC_RECALL_MULTICLASS_MACRO = 'recall_macro'
+METRIC_RECALL_MULTICLASS_MICRO = 'recall_micro'
+METRIC_F1_MULTICLASS_MACRO = 'f1_macro'
+METRIC_F1_MULTICLASS_MICRO = 'f1_micro'
 METRIC_TP = 'tp'
 METRIC_FP = 'fp'
 METRIC_FN = 'fn'
@@ -23,28 +27,61 @@ def process_inference(data: torch.Tensor | np.ndarray | list):
     if not isinstance(data, (torch.Tensor, list, np.array)):
         raise Exception("Data type is not Tensor or numpy array or list. Please enter one of those.")
 
-def compute_confidence_interval(samples, metric,number_of_classes, labels=None, conditions=None, num_bootstraps=1000, alpha=5, samples2=None):
+def compute_confidence_interval(samples, metric,number_of_classes, threshold = None, labels=None, conditions=None, num_bootstraps=1000, alpha=5, samples2=None):
     """
     Documentation
     """
     process_inference(samples) # Raise exception if needed for inference scores.
     process_inference(labels) # Raise exception if needed for labels.
 
+    if torch.is_tensor(samples):
+        samples = np.array(samples.tolist())
+    elif isinstance(samples,list):
+        samples = np.array(samples)
+    if torch.is_tensor(labels):
+        labels = np.array(labels.tolist())
+    elif isinstance(labels, list):
+        labels = np.array(labels) 
+
+    metric.c = number_of_classes
+
     #tp, fp, fn = self.get_confusion_matrix(filtered_predictions, annotations, IOU_THRESHOLD, conf_threshold)
 
-    if metric == METRIC_MAP:
-        return evaluate_with_conf_int(samples=samples, metric=mAP, number_of_classes=number_of_classes, labels=labels, conditions=conditions, num_bootstraps=num_bootstraps,alpha=alpha,samples2=samples2)
-    # elif metric == METRIC_PRECISION:
-    #     return
-    #     #return evaluate_with_conf_int(samples=samples, metric=, number_of_classes=number_of_classes, labels=labels, conditions=conditions, num_bootstraps=num_bootstraps,alpha=alpha,samples2=samples2)
-    # elif metric == METRIC_RECALL:
-    #     return
-    # elif metric == METRIC_F1:
-    #     return
-    # elif metric == METRIC_ACCURACY:
-    #     return
+    if metric == METRIC_AUC:
+        return evaluate_with_conf_int(samples=samples, metric=auc, labels=labels, conditions=conditions, num_bootstraps=num_bootstraps,alpha=alpha,samples2=samples2)
+    elif metric == METRIC_MAP:
+        return evaluate_with_conf_int(samples=samples, metric=mAP, labels=labels, conditions=conditions, num_bootstraps=num_bootstraps,alpha=alpha,samples2=samples2)
+    
+    
+    elif metric == METRIC_PRECISION_BINARY:
+        metric.threshold = threshold # Must be a number int or float (not a list)
+        return evaluate_with_conf_int(samples=samples, metric=precision_binary, labels=labels, conditions=conditions, num_bootstraps=num_bootstraps,alpha=alpha,samples2=samples2)
+    elif metric == METRIC_RECALL_BINARY:
+        metric.threshold = threshold # Must be a list of ints and floats(threshold for each class, if a number, same threshold for all classes)
+        return evaluate_with_conf_int(samples=samples, metric=recall_binary, labels=labels, conditions=conditions, num_bootstraps=num_bootstraps,alpha=alpha,samples2=samples2)
+    elif metric == METRIC_F1_BINARY:
+        metric.threshold = threshold
+        return evaluate_with_conf_int(samples=samples, metric=f1_binary, labels=labels, conditions=conditions, num_bootstraps=num_bootstraps,alpha=alpha,samples2=samples2)
+    elif metric == METRIC_PRECISION_MULTICLASS_MACRO:
+        metric.threshold = threshold
+        return evaluate_with_conf_int(samples=samples, metric=precision_multiclass_macro, labels=labels, conditions=conditions, num_bootstraps=num_bootstraps,alpha=alpha,samples2=samples2)
+    elif metric == METRIC_PRECISION_MULTICLASS_MICRO:
+        metric.threshold = threshold
+        return evaluate_with_conf_int(samples=samples, metric=precision_multiclass_micro, labels=labels, conditions=conditions, num_bootstraps=num_bootstraps,alpha=alpha,samples2=samples2)
+    elif metric == METRIC_RECALL_MULTICLASS_MACRO:
+        metric.threshold = threshold
+        return evaluate_with_conf_int(samples=samples, metric=recall_multiclass_macro, labels=labels, conditions=conditions, num_bootstraps=num_bootstraps,alpha=alpha,samples2=samples2)
+    elif metric == METRIC_RECALL_MULTICLASS_MICRO:
+        metric.threshold = threshold
+        return evaluate_with_conf_int(samples=samples, metric=recall_multiclass_micro, labels=labels, conditions=conditions, num_bootstraps=num_bootstraps,alpha=alpha,samples2=samples2)
+    elif metric == METRIC_F1_MULTICLASS_MACRO:
+        metric.threshold = threshold
+        return evaluate_with_conf_int(samples=samples, metric=f1_multiclass_macro, labels=labels, conditions=conditions, num_bootstraps=num_bootstraps,alpha=alpha,samples2=samples2)
+    elif metric == METRIC_F1_MULTICLASS_MICRO:
+        metric.threshold = threshold
+        return evaluate_with_conf_int(samples=samples, metric=f1_multiclass_micro, labels=labels, conditions=conditions, num_bootstraps=num_bootstraps,alpha=alpha,samples2=samples2)
 
-def evaluate_with_conf_int(samples, metric,number_of_classes, labels=None, conditions=None, num_bootstraps=1000, alpha=5, samples2=None):
+def evaluate_with_conf_int(samples, metric, labels=None, conditions=None, num_bootstraps=1000, alpha=5, samples2=None):
     """
     Supports both
     """
@@ -73,15 +110,6 @@ def evaluate_with_conf_int(samples, metric,number_of_classes, labels=None, condi
 
         See https://github.com/luferrer/ConfidenceIntervals for more details. 
     """
-    if torch.is_tensor(samples):
-        samples = np.array(samples.tolist())
-    elif isinstance(samples,list):
-        samples = np.array(samples)
-    if torch.is_tensor(labels):
-        labels = np.array(labels.tolist())
-    elif isinstance(labels, list):
-        labels = np.array(labels) 
-    metric.c = number_of_classes
     center = Bootstrap.metric_wrapper(labels, samples, samples2,metric)
     bt = Bootstrap(num_bootstraps, metric)
     ci = bt.get_conf_int(samples, labels, conditions, alpha=alpha, samples2=samples2)

@@ -65,12 +65,11 @@ class Evaluator:
             
                 # Process model output   
                 image_predictions = self.get_model_predictions(image)
-
-                # Append predictions
-                if image_predictions.shape[0] > 0:
-                    predictions.append(image_predictions)
-                else:
+                if image_predictions.shape[0] == 0:
                     logger.warning(f"Image {image_id} - No predictions")
+                
+                # Append predictions
+                predictions.append(image_predictions)
 
             except Exception as e:
                 traceback.print_exc()

@@ -12,7 +12,7 @@ import os
 # Custom modules
 from utils.evaluator import Evaluator
 import utils.config as config
-import utils.statistics.confidence_intervals as confidence_intervals
+#import utils.statistics.confidence_intervals as confidence_intervals
 
 # Variables
 logger = logging.getLogger(__name__)
@@ -79,7 +79,7 @@ class ObjectDetection(Evaluator):
             map_results = metric_map.compute()
 
             # Compute confusion matrix for IOU threshold of 0.5
-            tp, fp, fn = self.get_confusion_matrix(filtered_predictions, annotations, IOU_THRESHOLD)
+            tp, fp, fn = self.get_confusion_matrix(filtered_predictions, annotations)
 
             # Compute precision, recall, and F1-score
             precision = tp / (tp + fp) if (tp + fp) > 0 else 0
@@ -130,29 +130,32 @@ class ObjectDetection(Evaluator):
 
             # Process predictions - Only one image
             predictions = output[0].T  # (8400, 84)
-    
-            # Split into boxes and class scores
-            boxes = predictions[:, :4]
-            scores = predictions[:, 4:]
-            
-            # Convert bboxes to original dimensions
-            boxes_xyxy = torch.zeros_like(boxes)
-            image_width, image_height = image.size
-            scale_x = image_width / 640
-            scale_y = image_height / 640
 
-            # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
-            boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2]/2  # x1
-            boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3]/2  # y1
-            boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2]/2  # x2
-            boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3]/2  # y2
+            if predictions.shape[0] > 0:
+                # Split into boxes and class scores
+                boxes = predictions[:, :4]
+                scores = predictions[:, 4:]
+                
+                # Convert bboxes to original dimensions
+                boxes_xyxy = torch.zeros_like(boxes)
+                image_width, image_height = image.size
+                scale_x = image_width / 640
+                scale_y = image_height / 640
 
-            # Convert bboxes to original size
-            boxes_xyxy[:, [0, 2]] *= scale_x
-            boxes_xyxy[:, [1, 3]] *= scale_y
-            
-            # Get final predictions
-            return torch.cat((boxes_xyxy, scores), dim=1)
+                # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
+                boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2]/2  # x1
+                boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3]/2  # y1
+                boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2]/2  # x2
+                boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3]/2  # y2
+
+                # Convert bboxes to original size
+                boxes_xyxy[:, [0, 2]] *= scale_x
+                boxes_xyxy[:, [1, 3]] *= scale_y
+                
+                # Get final predictions
+                return torch.cat((boxes_xyxy, scores), dim=1)
+            else:
+                return torch.tensor([])
 
         elif self.model.model_type == config.MODEL_DETR:
             # Resize to model's input size + Convert to tensor (C, H, W) & scale to [0,1]
@@ -168,35 +171,38 @@ class ObjectDetection(Evaluator):
             output_scores = torch.from_numpy(model_output[0])[0]
             output_boxes = torch.from_numpy(model_output[1])[0]
 
-            # Process predictions - Only one image
-            boxes = output_boxes[0] # (100, 92)
-            scores = output_scores[0] # (100, 4)
+            if output_boxes.shape[0] > 0:
+                # Process predictions - Only one image
+                boxes = output_boxes[0] # (100, 92)
+                scores = output_scores[0] # (100, 4)
 
-            # Convert boxes to original dimensions
-            boxes_xyxy = torch.zeros_like(boxes)
-            resized_height, resized_width = image_array.shape[2], image_array.shape[3]
-            image_width, image_height = image.size
-            scale_x = image_width / resized_width
-            scale_y = image_height / resized_height
+                # Convert boxes to original dimensions
+                boxes_xyxy = torch.zeros_like(boxes)
+                resized_height, resized_width = image_array.shape[2], image_array.shape[3]
+                image_width, image_height = image.size
+                scale_x = image_width / resized_width
+                scale_y = image_height / resized_height
 
-            # Denormalize boxes
-            boxes_xyxy[:, 0] = boxes[:, 0] * resized_width
-            boxes_xyxy[:, 1] = boxes[:, 1] * resized_height
-            boxes_xyxy[:, 2] = boxes[:, 2] * resized_width
-            boxes_xyxy[:, 3] = boxes[:, 3] * resized_height
+                # Denormalize boxes
+                boxes_xyxy[:, 0] = boxes[:, 0] * resized_width
+                boxes_xyxy[:, 1] = boxes[:, 1] * resized_height
+                boxes_xyxy[:, 2] = boxes[:, 2] * resized_width
+                boxes_xyxy[:, 3] = boxes[:, 3] * resized_height
 
-            # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
-            boxes_xyxy[:, 0] = boxes_xyxy[:, 0] - boxes_xyxy[:, 2]/2  # x1
-            boxes_xyxy[:, 1] = boxes_xyxy[:, 1] - boxes_xyxy[:, 3]/2  # y1
-            boxes_xyxy[:, 2] = boxes_xyxy[:, 0] + boxes_xyxy[:, 2]/2  # x2
-            boxes_xyxy[:, 3] = boxes_xyxy[:, 1] + boxes_xyxy[:, 3]/2  # y2
+                # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
+                boxes_xyxy[:, 0] = boxes_xyxy[:, 0] - boxes_xyxy[:, 2]/2  # x1
+                boxes_xyxy[:, 1] = boxes_xyxy[:, 1] - boxes_xyxy[:, 3]/2  # y1
+                boxes_xyxy[:, 2] = boxes_xyxy[:, 0] + boxes_xyxy[:, 2]/2  # x2
+                boxes_xyxy[:, 3] = boxes_xyxy[:, 1] + boxes_xyxy[:, 3]/2  # y2
 
-            # Convert bboxes to original size
-            boxes_xyxy[:, [0, 2]] *= scale_x
-            boxes_xyxy[:, [1, 3]] *= scale_y
-            
-            # Get final predictions
-            return torch.cat((boxes_xyxy, scores), dim=1)
+                # Convert bboxes to original size
+                boxes_xyxy[:, [0, 2]] *= scale_x
+                boxes_xyxy[:, [1, 3]] *= scale_y
+                
+                # Get final predictions
+                return torch.cat((boxes_xyxy, scores), dim=1)
+            else:
+                return torch.tensor([])
         else:
             return torch.tensor([])
     
@@ -295,7 +301,7 @@ class ObjectDetection(Evaluator):
 
         return processed_predictions
 
-    def get_confusion_matrix(self, predictions: list, annotations: list, iou_thresh: float):
+    def get_confusion_matrix(self, predictions: list, annotations: list, iou_thresh: float = IOU_THRESHOLD):
         """
             Computes the confusion matrix for a given set of predictions and annotations.
             both predictions and annotations are in torchmetrics format
@@ -326,5 +332,6 @@ class ObjectDetection(Evaluator):
                     fp += 1
 
             fn += len(annot_boxes) - matched.sum().item()
+            logger.info(matched)
 
         return tp, fp, fn
