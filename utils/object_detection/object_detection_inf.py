@@ -8,11 +8,11 @@ import torch
 import torchvision
 import logging
 import os
+import traceback
 
 # Custom modules
 from utils.evaluator import Evaluator
 import utils.config as config
-#import utils.statistics.confidence_intervals as confidence_intervals
 
 # Variables
 logger = logging.getLogger(__name__)
@@ -106,105 +106,6 @@ class ObjectDetection(Evaluator):
             })
         
         return results
-    
-    def get_model_predictions(self, image: Image) -> torch.Tensor:
-        """
-            Required by the Evaluator class
-            Parses raw output from the model for a single image
-            Returns a tensor contains model predictions(bboxes for the image)
-
-            each prediction is represented as [x_min, y_min, x_max, y_max, class_1_prob, class_2_prob, ...], 
-            where amount of classes is defined by the model
-        """
-        if self.model.model_type == config.MODEL_YOLO:
-            # Resize to model's input size + Convert to tensor (C, H, W) & scale to [0,1]
-            transform = transforms.Compose([
-                transforms.Resize((640, 640)),
-                transforms.ToTensor()
-            ])
-            image_array = transform(image).unsqueeze(0).numpy()
-
-            # Get model output
-            model_output = self.model.predict(image_array)
-            output = torch.from_numpy(model_output[0]) 
-
-            # Process predictions - Only one image
-            predictions = output[0].T  # (8400, 84)
-
-            if predictions.shape[0] > 0:
-                # Split into boxes and class scores
-                boxes = predictions[:, :4]
-                scores = predictions[:, 4:]
-                
-                # Convert bboxes to original dimensions
-                boxes_xyxy = torch.zeros_like(boxes)
-                image_width, image_height = image.size
-                scale_x = image_width / 640
-                scale_y = image_height / 640
-
-                # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
-                boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2]/2  # x1
-                boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3]/2  # y1
-                boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2]/2  # x2
-                boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3]/2  # y2
-
-                # Convert bboxes to original size
-                boxes_xyxy[:, [0, 2]] *= scale_x
-                boxes_xyxy[:, [1, 3]] *= scale_y
-                
-                # Get final predictions
-                return torch.cat((boxes_xyxy, scores), dim=1)
-            else:
-                return torch.tensor([])
-
-        elif self.model.model_type == config.MODEL_DETR:
-            # Resize to model's input size + Convert to tensor (C, H, W) & scale to [0,1]
-            transform = transforms.Compose([
-                transforms.Resize((800, 1066)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) 
-            ])
-            image_array = transform(image).unsqueeze(0).numpy()
-
-            # Get model output
-            model_output = self.model.predict(image_array)
-            output_scores = torch.from_numpy(model_output[0])[0]
-            output_boxes = torch.from_numpy(model_output[1])[0]
-
-            if output_boxes.shape[0] > 0:
-                # Process predictions - Only one image
-                boxes = output_boxes[0] # (100, 92)
-                scores = output_scores[0] # (100, 4)
-
-                # Convert boxes to original dimensions
-                boxes_xyxy = torch.zeros_like(boxes)
-                resized_height, resized_width = image_array.shape[2], image_array.shape[3]
-                image_width, image_height = image.size
-                scale_x = image_width / resized_width
-                scale_y = image_height / resized_height
-
-                # Denormalize boxes
-                boxes_xyxy[:, 0] = boxes[:, 0] * resized_width
-                boxes_xyxy[:, 1] = boxes[:, 1] * resized_height
-                boxes_xyxy[:, 2] = boxes[:, 2] * resized_width
-                boxes_xyxy[:, 3] = boxes[:, 3] * resized_height
-
-                # Convert boxes from (x, y, w, h) to (x1, y1, x2, y2)
-                boxes_xyxy[:, 0] = boxes_xyxy[:, 0] - boxes_xyxy[:, 2]/2  # x1
-                boxes_xyxy[:, 1] = boxes_xyxy[:, 1] - boxes_xyxy[:, 3]/2  # y1
-                boxes_xyxy[:, 2] = boxes_xyxy[:, 0] + boxes_xyxy[:, 2]/2  # x2
-                boxes_xyxy[:, 3] = boxes_xyxy[:, 1] + boxes_xyxy[:, 3]/2  # y2
-
-                # Convert bboxes to original size
-                boxes_xyxy[:, [0, 2]] *= scale_x
-                boxes_xyxy[:, [1, 3]] *= scale_y
-                
-                # Get final predictions
-                return torch.cat((boxes_xyxy, scores), dim=1)
-            else:
-                return torch.tensor([])
-        else:
-            return torch.tensor([])
     
     def get_torchmetrics_annotations(self, coco_dataset: COCO):
         """
@@ -332,6 +233,5 @@ class ObjectDetection(Evaluator):
                     fp += 1
 
             fn += len(annot_boxes) - matched.sum().item()
-            logger.info(matched)
 
         return tp, fp, fn

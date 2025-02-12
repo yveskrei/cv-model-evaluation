@@ -5,27 +5,17 @@ import os
 # Custom modules
 import utils.config as config
 
-# Evaluators
-from utils.tasks.object_detection import ObjectDetection
-
 # Variables
 logger = logging.getLogger(__name__)
 
 class Wrapper:
-    def __init__(self, model_path: str, model_task: str, model_type: str):
+    def __init__(self, model_path: str, model_type: str):
         if not os.path.exists(model_path):
             raise Exception(f"Model is not found at {model_path}")
         
         # Specify model parameters
         self.model_type = model_type
         self.model_path = model_path
-        self.model_task = model_task
-
-        # Define model evaluator
-        if model_task == config.TASK_DETECTION:
-            self.evaluator = ObjectDetection(self)
-        else:
-            raise Exception(f"Model task {model_task} is not supported")
         
         # Create ONNX session for prediction
         self.ort_session = self.get_ort_session()
