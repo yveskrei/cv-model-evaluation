@@ -61,4 +61,3 @@ htmlcov/
 datasets/
 sources/
 models/
-testing.py

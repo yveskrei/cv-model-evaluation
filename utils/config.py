@@ -2,11 +2,9 @@ import logging
 
 # Model Types
 MODEL_YOLO = 'YOLO'
-MODEL_DETR = 'DETR'
 
 # Model Tasks
 TASK_DETECTION = 'DETECTION'
-TASK_MULTI_LABEL_CLASSIFICATION = 'MULTI_LABEL_CLASSIFICATION'
 
 # Device type
 PROVIDER_CPU = 'CPUExecutionProvider'

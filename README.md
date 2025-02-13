@@ -1,6 +1,8 @@
 # CV Model evaluation
 Acts as an evaluation tool for variaty of models, outputting various graphs and metrics to help get a better
-understanding of the behaviour of the model.
+understanding of the behaviour of the model.<br>
+The script is designed to both run inference with a given dataset(COCO format), and ONNX model, and create metrics given a file of model predictions(torchmetrics format).<br>
+Script is currently supporting YOLO models only for inference
 
 ## Setting things up
 Make sure you install all the required python modules to run the tool properly
@@ -13,7 +15,44 @@ To download the CUDA versions for these packages:
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 ```
 
-## Prerequisites
+## Usage
+You can either choose to do inference on a model, or provide a file to calculate metrics on.
+```python
+import json
+
+# Custom modules
+from utils.wrapper import Wrapper
+import utils.object_detection.evaluator as object_detection
+import utils.config as config
+
+# Get metrics from model inference
+model = Wrapper(
+    model_path='./models/yolov9-m.onnx',
+    model_type=config.MODEL_YOLO
+)
+metrics_results = object_detection.evaluate_model_inference(
+    model=model,
+    coco_annotation='./datasets/val2017/annotation.json',
+    export_results=True
+)
+
+# Get metrics from results
+metrics_results = object_detection.evaluate_results_file(
+    results_path='./inference_results.json'
+)
+
+# Save results to JSON
+with open('results.json', 'w') as file:
+    json.dump(metrics_results, file, indent=4)
+```
+
+## Examples
+Examples for the following can be found in folder **Examples**:
+- COCO annotation(For running inference)
+- Model predictions file(For getting metrics from a file)
+- Metrics results
+
+## Prerequisites - Inference
 The tool is designed to handle ONNX models only, meaning you must export your model to ONNX format first.<br>
 When doing so, please make sure you follow the format below:
 ```python
