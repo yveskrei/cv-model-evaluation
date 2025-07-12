@@ -16,35 +16,19 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 ```
 
 ## Usage
-You can either choose to do inference on a model, or provide a file to calculate metrics on.
-```python
-import json
-
-# Custom modules
-from utils.wrapper import Wrapper
-import utils.object_detection.evaluator as object_detection
-import utils.config as config
-
-# Get metrics from model inference
-model = Wrapper(
-    model_path='./models/yolov9-m.onnx',
-    model_type=config.MODEL_YOLO
-)
-metrics_results = object_detection.evaluate_model_inference(
-    model=model,
-    coco_annotation='./datasets/val2017/annotation.json',
-    export_results=True
-)
-
-# Get metrics from results
-metrics_results = object_detection.evaluate_results_file(
-    results_path='./inference_results.json'
-)
-
-# Save results to JSON
-with open('results.json', 'w') as file:
-    json.dump(metrics_results, file, indent=4)
+You can either choose to do inference on a model, or provide a file to calculate metrics on.<br>
+Evaluation using a model & COCO dataset:
+```bash
+python3 -m evaluate --model_path <path_to_model> --model_type <model_type> --coco_annotation <path_to_coco_annotation>
 ```
+
+Evaluation using a file with model predictions:
+```bash
+python3 -m evaluate --results_path <path_to_results_file>   
+```
+
+Inference results will be saved in the current working directory, in a file named **inference_results.json**.<br>
+Evaluation results will be saved in the current working directory, in a file named **eval_results.json**.<br>
 
 ## Examples
 Examples for the following can be found in folder **Examples**:
@@ -53,32 +37,20 @@ Examples for the following can be found in folder **Examples**:
 - Metrics results
 
 ## Prerequisites - Inference
-The tool is designed to handle ONNX models only, meaning you must export your model to ONNX format first.<br>
-When doing so, please make sure you follow the format below:
-```python
-INPUT_MODEL = 'yolov9-m.pt'
-OUTPUT_MODEL = 'yolov9-m.onnx'
-
-# Load model(Can vary between models)
-model_base = torch.load(
-    INPUT_MODEL, 
-    map_location='cuda', 
-    weights_only=False
-)
-model = model_base['model'].float()
-
-# Create a dummpy input for ONNX to understand what input it would be expecting at inference
-# Change to the input your model is expecting(this is YOLO Architecture specific)
-dummy_input = torch.randn(1, 3, 640, 640).to('cuda')
-
-# Export model to ONNX
-torch.onnx.export(
-    model, 
-    dummy_input, 
-    OUTPUT_MODEL, 
-    input_names=['input'],
-    output_names=['output'],
-    dynamic_axes={"input": {2: "height", 3: "width"}, "output": {2: "height", 3: "width"}}  # Allow dynamic shapes
-)
+The tool is designed to handle ONNX/TensorRt models, and currently supports YOLO models only.<br>
+A tool is provided to convert YOLO models to ONNX format, and can be found in **assets/convert_onnx_yolo.py**:<br>
+```bash
+python3 -m convert_onnx_yolo --model-path <path_to_model> --input-name <input_name> --output-name <output_name>
 ```
-Make sure you have **input_names**, and **output_names** equivalent to those in the example above.
+
+To convert a model to TensorRT, run the following command:
+```bash
+trtexec \
+  --onnx=MODEL.onnx \
+  --saveEngine=CONVERTED.engine \
+  --optShapes=images:4x3x640x640 \
+  --minShapes=images:1x3x640x640 \
+  --maxShapes=images:8x3x640x640 \
+  --shapes=images:4x3x640x640 \
+  --fp16(Or omit for FP32)
+```

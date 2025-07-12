@@ -10,9 +10,6 @@ TASK_DETECTION = 'DETECTION'
 PROVIDER_CPU = 'CPUExecutionProvider'
 PROVIDER_CUDA = 'CUDAExecutionProvider'
 
-# COCO classes
-SUPPORTED_COCO_CLASSES = [1, 3, 4] # Person, Car, Motorcycle
-
 # Logger config
 logging.basicConfig(
     level=logging.INFO,
