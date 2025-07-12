@@ -6,10 +6,10 @@ import torchvision
 import logging
 import torch
 import os
+import traceback
 
 # Custom modules
 import utils.config as config
-from utils.wrapper import Wrapper
 
 # Variables
 logger = logging.getLogger(__name__)
@@ -32,32 +32,32 @@ def load_coco_dataset(coco_annotation: str) -> COCO:
         coco_dataset = COCO(coco_annotation)
         logger.info(f"Loaded dataset with {len(coco_dataset.getImgIds())} images, {len(coco_dataset.getAnnIds())} annotations")
 
-        # Filter dataset annotations to allowed classes
-        filtered_annotations = [
-            ann for ann in coco_dataset.dataset['annotations']
-            if ann['category_id'] in config.SUPPORTED_COCO_CLASSES
-        ]
-        filtered_categories = [
-            cat for cat in coco_dataset.dataset['categories']
-            if cat['id'] in config.SUPPORTED_COCO_CLASSES
-        ]
+        # # Filter dataset annotations to allowed classes
+        # filtered_annotations = [
+        #     ann for ann in coco_dataset.dataset['annotations']
+        #     if ann['category_id'] in config.SUPPORTED_COCO_CLASSES
+        # ]
+        # filtered_categories = [
+        #     cat for cat in coco_dataset.dataset['categories']
+        #     if cat['id'] in config.SUPPORTED_COCO_CLASSES
+        # ]
 
-        if len(filtered_annotations) == 0:
-            raise Exception("No annotations found for supported classes")
-        elif len(filtered_annotations) != len(coco_dataset.getAnnIds()):
-            logger.warning(f"Filtered dataset to {len(filtered_annotations)} annotations due to unsupported classes")
+        # if len(filtered_annotations) == 0:
+        #     raise Exception("No annotations found for supported classes")
+        # elif len(filtered_annotations) != len(coco_dataset.getAnnIds()):
+        #     logger.warning(f"Filtered dataset to {len(filtered_annotations)} annotations due to unsupported classes")
 
-            # Update dataset with filtered annotations
-            coco_dataset.dataset['annotations'] = filtered_annotations
-            coco_dataset.dataset['categories'] = filtered_categories
-            coco_dataset.createIndex()
+        #     # Update dataset with filtered annotations
+        #     coco_dataset.dataset['annotations'] = filtered_annotations
+        #     coco_dataset.dataset['categories'] = filtered_categories
+        #     coco_dataset.createIndex()
             
         return coco_dataset
     except Exception as e:
         logger.error(e)
         raise Exception('Could not load COCO dataset')
 
-def get_torchmetrics_results(model: Wrapper, coco_dataset: COCO, dataset_folder: str) -> list[dict]:
+def get_torchmetrics_results(model, coco_dataset: COCO, dataset_folder: str) -> list[dict]:
     """
         Loads model annotations & predictions for each image in the dataset
         returns all results in torchmetrics format
@@ -85,7 +85,7 @@ def get_torchmetrics_results(model: Wrapper, coco_dataset: COCO, dataset_folder:
             })
 
         except Exception as e:
-            logger.error(e)
+            logger.error(traceback.format_exc())
             logger.error(f"Image {image_id} - {e}")
 
     return predictions
@@ -119,7 +119,7 @@ def get_image_annotations(coco_dataset: COCO, image_id: str):
         'labels': torch.tensor(labels, dtype=torch.int64)
     }
 
-def get_image_predictions(model: Wrapper, image: Image) -> dict:
+def get_image_predictions(model, image: Image) -> dict:
     """
         Required by the Evaluator class
         Parses raw output from the model for a single image
@@ -133,17 +133,28 @@ def get_image_predictions(model: Wrapper, image: Image) -> dict:
     if model.model_type == config.MODEL_YOLO:
         # Resize to model's input size + Convert to tensor (C, H, W) & scale to [0,1]
         transform = transforms.Compose([
-            transforms.Resize((640, 640)),
+            transforms.Resize((640, 640), interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.ToTensor()
         ])
         image_array = transform(image).unsqueeze(0).numpy()
 
         # Get model output
         model_output = model.predict(image_array)
-        output = torch.from_numpy(model_output[0]) 
+        output = torch.from_numpy(model_output) 
+
+        # Get first element of output if it's a list or tuple
+        if isinstance(output, (list, tuple)):
+            output = output[0]
+        
+        if len(output.shape) == 1:
+            output = output.reshape(84, 8400)
+        
+        # Convert to float32 if needed
+        if output.dtype == torch.float16:
+            output = output.to(torch.float32)
 
         # Process predictions - Only one image
-        predictions = output[0].T  # (8400, 84)
+        predictions = output.T  # (8400, 84)
 
         if predictions.shape[0] > 0:
             # Split into boxes and class scores
