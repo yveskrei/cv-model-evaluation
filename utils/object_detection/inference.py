@@ -31,26 +31,6 @@ def load_coco_dataset(coco_annotation: str) -> COCO:
         # Parse COCO Annotations
         coco_dataset = COCO(coco_annotation)
         logger.info(f"Loaded dataset with {len(coco_dataset.getImgIds())} images, {len(coco_dataset.getAnnIds())} annotations")
-
-        # # Filter dataset annotations to allowed classes
-        # filtered_annotations = [
-        #     ann for ann in coco_dataset.dataset['annotations']
-        #     if ann['category_id'] in config.SUPPORTED_COCO_CLASSES
-        # ]
-        # filtered_categories = [
-        #     cat for cat in coco_dataset.dataset['categories']
-        #     if cat['id'] in config.SUPPORTED_COCO_CLASSES
-        # ]
-
-        # if len(filtered_annotations) == 0:
-        #     raise Exception("No annotations found for supported classes")
-        # elif len(filtered_annotations) != len(coco_dataset.getAnnIds()):
-        #     logger.warning(f"Filtered dataset to {len(filtered_annotations)} annotations due to unsupported classes")
-
-        #     # Update dataset with filtered annotations
-        #     coco_dataset.dataset['annotations'] = filtered_annotations
-        #     coco_dataset.dataset['categories'] = filtered_categories
-        #     coco_dataset.createIndex()
             
         return coco_dataset
     except Exception as e:
@@ -167,17 +147,11 @@ def get_image_predictions(model, image: Image) -> dict:
             # Map label to coco class
             scores_labels += 1
 
-            # Filter unsupported coco classes
-            supported_mask = torch.isin(scores_labels, torch.tensor(config.SUPPORTED_COCO_CLASSES))
-            boxes_filtered = boxes[supported_mask]
-            scores_filtered = scores_max[supported_mask]
-            labels_filtered = scores_labels[supported_mask]
-
-            # Filter bboxes for confidence aas low as possible to apply NMS
-            conf_mask = scores_filtered >= NMS_CONF_THRESHOLD
-            boxes_filtered = boxes_filtered[conf_mask]
-            scores_filtered = scores_filtered[conf_mask]
-            labels_filtered = labels_filtered[conf_mask]
+            # Filter bboxes for confidence as low as possible to apply NMS
+            conf_mask = scores_max >= NMS_CONF_THRESHOLD
+            boxes_filtered = boxes[conf_mask]
+            scores_filtered = scores_max[conf_mask]
+            labels_filtered = scores_labels[conf_mask]
 
             # Convert bboxes to original dimensions
             boxes_xyxy = torch.zeros_like(boxes_filtered)
