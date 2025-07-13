@@ -3,7 +3,6 @@ import numpy as np
 import torchvision
 import logging
 import torch
-import json
 import os
 
 # Custom modules
@@ -71,8 +70,8 @@ def evaluate(inference_results: list[dict]):
             'total_predictions': sum([len(x['labels']) for x in predictions]),
             'total_images': len(targets)
         },
-        'per_confidence': per_confidence,
         'map': map_stats,
+        'per_confidence': per_confidence,
     }
 
 def get_map_statistics(targets: list[dict], predictions: list[dict]) -> dict:
@@ -153,12 +152,32 @@ def get_per_confidence_statistics(targets: list[dict], predictions: list[dict], 
             }
         
         # Calculate overall metrics
-        for cls in classes:
-            threshold_stats['macro'] = {
-                'precision': np.mean([threshold_stats[cls]['precision'] for cls in classes]),
-                'recall': np.mean([threshold_stats[cls]['recall'] for cls in classes]),
-                'f1_score': np.mean([threshold_stats[cls]['f1_score'] for cls in classes]),
-            }
+        total_tp = sum([threshold_stats[cls]['tp'] for cls in classes])
+        total_fp = sum([threshold_stats[cls]['fp'] for cls in classes])
+        total_fn = sum([threshold_stats[cls]['fn'] for cls in classes])
+        total_precision = sum([threshold_stats[cls]['precision'] for cls in classes])
+        total_recall = sum([threshold_stats[cls]['recall'] for cls in classes])
+        total_f1_score = sum([threshold_stats[cls]['f1_score'] for cls in classes])
+
+        # Macro
+        threshold_stats['macro'] = {
+            'precision': total_precision / len(classes) if len(classes) > 0 else 1,
+            'recall': total_recall / len(classes) if len(classes) > 0 else 0,
+            'f1_score':  total_f1_score / len(classes) if len(classes) > 0 else 0,
+        }
+
+        # Micro
+        micro_precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 1
+        micro_recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
+        micro_f1_score = (2 * micro_precision * micro_recall) / (micro_precision + micro_recall) if (micro_precision + micro_recall) > 0 else 0
+        threshold_stats['micro'] = {
+            'precision': micro_precision,
+            'recall': micro_recall,
+            'f1_score':  micro_f1_score,
+            'tp': total_tp,
+            'fp': total_fp,
+            'fn': total_fn
+        }
 
         confidence_results.append({
             'confidence_threshold': conf_threshold,
