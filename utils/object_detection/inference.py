@@ -13,14 +13,16 @@ import utils.config as config
 
 # Variables
 logger = logging.getLogger(__name__)
-NMS_IOU_THRESHOLD = 0.50
-NMS_CONF_THRESHOLD = 0.01
+NMS_IOU_THRESHOLD = 0.70
+NMS_CONF_THRESHOLD = 0.001
+MAX_IMAGE_DETECTIONS = 300
 
 def load_coco_dataset(coco_annotation: str) -> COCO:
     """
         Dataset should be in the following format:
         A folder, including images, with it an annotations.json file, in COCO format.
         returns the base annotations together with the predictions of the model, in COCO format.
+        We filter all categories to only include the first 80 categories(actual COCO categories).
     """
 
     # Validate existance of annotations file
@@ -30,6 +32,31 @@ def load_coco_dataset(coco_annotation: str) -> COCO:
     try:
         # Parse COCO Annotations
         coco_dataset = COCO(coco_annotation)
+
+        # Step 1: Filter categories
+        filtered_cat_ids = [cat_id for cat_id in coco_dataset.getCatIds() if cat_id <= 80]
+
+        # Step 2: Filter annotations
+        filtered_ann_ids = coco_dataset.getAnnIds(catIds=filtered_cat_ids)
+        filtered_anns = coco_dataset.loadAnns(filtered_ann_ids)
+
+        # Step 3: Find image ids referenced by filtered anns
+        filtered_img_ids = list(set(ann['image_id'] for ann in filtered_anns))
+
+        # Step 4: Filter images
+        filtered_imgs = [coco_dataset.imgs[img_id] for img_id in filtered_img_ids]
+
+        # Step 5: Filter categories
+        filtered_cats = [coco_dataset.cats[cat_id] for cat_id in filtered_cat_ids]
+
+        # Now rebuild the dataset dict
+        coco_dataset.dataset['annotations'] = filtered_anns
+        coco_dataset.dataset['images'] = filtered_imgs
+        coco_dataset.dataset['categories'] = filtered_cats
+
+        # Rebuild index dicts
+        coco_dataset.createIndex()
+
         logger.info(f"Loaded dataset with {len(coco_dataset.getImgIds())} images, {len(coco_dataset.getAnnIds())} annotations")
             
         return coco_dataset
@@ -61,7 +88,9 @@ def get_torchmetrics_results(model, coco_dataset: COCO, dataset_folder: str) -> 
             # Append results
             predictions.append({
                 'target': image_annotations,
-                'pred': image_predictions
+                'pred': image_predictions,
+                'image_file': image_info['file_name'],
+                'image_id': image_id
             })
 
         except Exception as e:
@@ -175,9 +204,19 @@ def get_image_predictions(model, image: Image) -> dict:
                 scores_filtered,
                 NMS_IOU_THRESHOLD
             )
-            boxes_final = boxes_xyxy[nms_mask]
-            scores_final = scores_filtered[nms_mask]
-            labels_final = labels_filtered[nms_mask]
+            boxes_xyxy = boxes_xyxy[nms_mask]
+            scores_filtered = scores_filtered[nms_mask]
+            labels_filtered = labels_filtered[nms_mask]
+
+            # Get top-k predictions based on scores
+            sorted_indices = torch.argsort(scores_filtered, descending=True)
+            top_indices = sorted_indices[:MAX_IMAGE_DETECTIONS]
+
+            # Step 3: Index into all final tensors
+            boxes_final = boxes_xyxy[top_indices]
+            scores_final = scores_filtered[top_indices]
+            labels_final = labels_filtered[top_indices]
+
         
     # Return predictions
     return {

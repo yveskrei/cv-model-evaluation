@@ -9,6 +9,7 @@ import utils.object_detection.evaluator as object_detection
 
 # Variables
 logger = logging.getLogger(__name__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -20,6 +21,10 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     eval_results = None
+
+    # Create results directory
+    results_dir = os.path.join(BASE_DIR, 'results')
+    os.makedirs(results_dir, exist_ok=True)
 
     # Check if able to do inference
     if args.model_path and args.coco_annotation:
@@ -52,7 +57,7 @@ if __name__ == '__main__':
         )
 
         # Save inference results to JSON
-        inf_results_path = os.path.join(os.getcwd(), 'inference_results.json')
+        inf_results_path = os.path.join(results_dir, 'inference_results.json')
         with open(inf_results_path, 'w', encoding='utf-8') as file:
             json.dump(inf_results, file, indent=4)
 
@@ -66,7 +71,7 @@ if __name__ == '__main__':
     
     # Save results to JSON
     if eval_results:
-        eval_results_path = os.path.join(os.getcwd(), 'eval_results.json')
+        eval_results_path = os.path.join(results_dir, 'eval_results.json')
 
         with open(eval_results_path, 'w') as file:
             json.dump(eval_results, file, indent=4)
